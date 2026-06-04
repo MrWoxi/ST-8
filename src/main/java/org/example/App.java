@@ -9,8 +9,9 @@ import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,120 +23,121 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * ST-8: заполняет форму на www.papercdcase.com через Selenium
- * и сохраняет сгенерированный PDF в result/cd.pdf.
- */
 public class App {
 
-    private static final int    MAX_TRACKS      = 16;
-    private static final String BASE_URL         = "http://www.papercdcase.com";
-    private static final String DOWNLOADED_NAME  = "papercdcase.pdf";
+    static final String SITE = "http://www.papercdcase.com";
+    static final String PDF_NAME = "papercdcase.pdf";
+    static final int TRACK_LIMIT = 16;
 
     public static void main(String[] args) throws Exception {
-        String projectDir = System.getProperty("user.dir");
+        String dir = System.getProperty("user.dir");
 
-        String chromeBin    = Paths.get(projectDir, "chrome-win64",      "chrome.exe").toString();
-        String chromeDriver = Paths.get(projectDir, "chromedriver-win64", "chromedriver.exe").toString();
-        System.setProperty("webdriver.chrome.driver", chromeDriver);
+        System.setProperty("webdriver.chrome.driver",
+            Paths.get(dir, "chromedriver-win64", "chromedriver.exe").toString());
 
-        CoverData data = readData(Paths.get(projectDir, "data", "data.txt"));
-        System.out.println("Artist : " + data.artist);
-        System.out.println("Title  : " + data.title);
-        System.out.println("Tracks : " + data.tracks.size());
+        AlbumInfo album = loadAlbum(Paths.get(dir, "data", "data.txt"));
+        System.out.println("Исполнитель: " + album.artist);
+        System.out.println("Альбом: " + album.title);
+        System.out.println("Треков: " + album.tracks.size());
 
-        Path resultDir  = Paths.get(projectDir, "result");
+        Path resultDir = Paths.get(dir, "result");
         Files.createDirectories(resultDir);
-        Path downloaded = resultDir.resolve(DOWNLOADED_NAME);
-        Path target     = resultDir.resolve("cd.pdf");
-        Files.deleteIfExists(downloaded);
 
-        ChromeOptions options = new ChromeOptions();
-        options.setBinary(chromeBin);
-        options.setAcceptInsecureCerts(true);
-        options.setPageLoadStrategy(PageLoadStrategy.NONE);
-        options.addArguments("--start-maximized");
+        Path pending = resultDir.resolve(PDF_NAME);
+        Path output  = resultDir.resolve("cd.pdf");
+        Files.deleteIfExists(pending);
 
-        Map<String, Object> prefs = new HashMap<>();
-        prefs.put("download.default_directory",       resultDir.toString());
-        prefs.put("download.prompt_for_download",     false);
-        prefs.put("plugins.always_open_pdf_externally", true);
-        options.setExperimentalOption("prefs", prefs);
+        ChromeOptions opts = buildOptions(
+            Paths.get(dir, "chrome-win64", "chrome.exe").toString(),
+            resultDir.toString()
+        );
 
-        WebDriver driver = new ChromeDriver(options);
+        WebDriver driver = new ChromeDriver(opts);
         try {
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
-
-            driver.get(BASE_URL);
-
-            wait.until(ExpectedConditions.presenceOfElementLocated(By.name("artist")));
-            driver.findElement(By.name("artist")).sendKeys(data.artist);
-            driver.findElement(By.name("title")).sendKeys(data.title);
-
-            int count = Math.min(data.tracks.size(), MAX_TRACKS);
-            for (int i = 0; i < count; i++) {
-                WebElement field = driver.findElement(By.name("track" + (i + 1)));
-                field.sendKeys(data.tracks.get(i));
-            }
-
-            driver.findElement(By.xpath("//input[@name='size' and @value='a4']")).click();
-            driver.findElement(By.xpath("//input[@name='template' and @value='jewel']")).click();
-
-            WebElement form = driver.findElement(By.xpath("//form"));
-            form.submit();
-
-            waitForDownload(downloaded, resultDir, Duration.ofSeconds(60));
-
-            Files.move(downloaded, target, StandardCopyOption.REPLACE_EXISTING);
-            System.out.println("Saved: " + target + " (" + Files.size(target) + " bytes)");
+            fillAndSubmit(driver, album);
+            waitDownload(pending, resultDir, Duration.ofSeconds(60));
+            Files.move(pending, output, StandardCopyOption.REPLACE_EXISTING);
+            System.out.println("Готово: " + output + " (" + Files.size(output) + " байт)");
         } finally {
             driver.quit();
         }
     }
 
-    // ===== Внутренние классы / методы =====
+    static ChromeOptions buildOptions(String chromeBin, String downloadDir) {
+        ChromeOptions opts = new ChromeOptions();
+        opts.setBinary(chromeBin);
+        opts.setAcceptInsecureCerts(true);
+        opts.setPageLoadStrategy(PageLoadStrategy.NONE);
+        opts.addArguments("--start-maximized");
 
-    private static class CoverData {
-        String artist = "";
-        String title  = "";
-        List<String> tracks = new ArrayList<>();
+        Map<String, Object> prefs = new HashMap<>();
+        prefs.put("download.default_directory", downloadDir);
+        prefs.put("download.prompt_for_download", false);
+        prefs.put("plugins.always_open_pdf_externally", true);
+        opts.setExperimentalOption("prefs", prefs);
+        return opts;
     }
 
-    /**
-     * Формат data.txt:
-     *   Artist: <имя>
-     *   Title: <название>
-     *   Остальные непустые строки — треки (по одному в строке).
-     */
-    private static CoverData readData(Path file) throws IOException {
-        CoverData data = new CoverData();
-        for (String raw : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-            String line = raw.trim();
-            if (line.isEmpty()) continue;
-            String lower = line.toLowerCase();
-            if (lower.startsWith("artist:")) {
-                data.artist = line.substring(line.indexOf(':') + 1).trim();
-            } else if (lower.startsWith("title:")) {
-                data.title = line.substring(line.indexOf(':') + 1).trim();
-            } else {
-                data.tracks.add(line);
-            }
+    static void fillAndSubmit(WebDriver driver, AlbumInfo album) {
+        WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
+
+        driver.get(SITE);
+        wait.until(ExpectedConditions.presenceOfElementLocated(By.name("artist")));
+
+        driver.findElement(By.name("artist")).sendKeys(album.artist);
+        driver.findElement(By.name("title")).sendKeys(album.title);
+
+        int n = Math.min(album.tracks.size(), TRACK_LIMIT);
+        for (int i = 0; i < n; i++) {
+            driver.findElement(By.name("track" + (i + 1))).sendKeys(album.tracks.get(i));
         }
-        return data;
+
+        driver.findElement(
+            By.xpath("//input[@name='size' and @value='a4']")).click();
+        driver.findElement(
+            By.xpath("//input[@name='template' and @value='jewel']")).click();
+
+        WebElement form = driver.findElement(By.xpath("//form"));
+        form.submit();
     }
 
-    /** Ждёт, пока файл полностью скачается (нет .crdownload). */
-    private static void waitForDownload(Path file, Path dir, Duration timeout)
+    static void waitDownload(Path file, Path dir, Duration timeout)
             throws IOException, InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
-            boolean hasPartial = false;
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*.crdownload")) {
-                hasPartial = stream.iterator().hasNext();
+            boolean partial = false;
+            try (DirectoryStream<Path> s = Files.newDirectoryStream(dir, "*.crdownload")) {
+                partial = s.iterator().hasNext();
             }
-            if (Files.exists(file) && Files.size(file) > 0 && !hasPartial) return;
+            if (Files.exists(file) && Files.size(file) > 0 && !partial) return;
             Thread.sleep(500);
         }
-        throw new IOException("PDF не скачан за " + timeout.getSeconds() + " с");
+        throw new IOException("Файл не скачан за " + timeout.getSeconds() + " с");
+    }
+
+    static AlbumInfo loadAlbum(Path file) throws IOException {
+        AlbumInfo a = new AlbumInfo();
+        try (BufferedReader br = new BufferedReader(new FileReader(file.toFile()))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty()) continue;
+                String low = line.toLowerCase();
+                if (low.startsWith("artist:")) {
+                    a.artist = line.substring(line.indexOf(':') + 1).trim();
+                } else if (low.startsWith("title:")) {
+                    a.title = line.substring(line.indexOf(':') + 1).trim();
+                } else {
+                    a.tracks.add(line);
+                }
+            }
+        }
+        return a;
+    }
+
+    static class AlbumInfo {
+        String artist = "";
+        String title  = "";
+        List<String> tracks = new ArrayList<>();
     }
 }
